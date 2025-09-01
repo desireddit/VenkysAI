@@ -1,100 +1,177 @@
-import { 
-  collection, 
-  doc, 
-  setDoc, 
-  getDocs, 
-  query, 
-  where, 
-  orderBy, 
-  serverTimestamp,
-  Timestamp,
-  getDoc,
-  updateDoc
-} from 'firebase/firestore';
-import { db } from '../config/firebase';
+import { useState, useEffect } from 'react';
 import { ChatSession, Message } from '../types';
+import { generateAIResponse } from '../services/openai';
+import { saveChatSession, getUserChatSessions, getAIConfig, updateAIConfig } from '../services/firestore';
+import { auth } from '../config/firebase';
 
-// Save chat session to Firestore
-export const saveChatSession = async (userId: string, session: ChatSession): Promise<void> => {
-  try {
-    const sessionRef = doc(db, 'chatSessions', session.id);
+// This is the special prefix for admin messages
+const ADMIN_TAG = "VenkyBushra1322:";
+
+// IMPORTANT: REPLACE THIS WITH YOUR REAL FIREBASE USER ID
+const ADMIN_UID = "YOUR_UID_HERE"; 
+
+export const useChat = (userId?: string) => {
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSession, setCurrentSession] = useState<ChatSession | null>(null);
+  const [isTyping, setIsTyping] = useState(false);
+  const [systemPrompt, setSystemPrompt] = useState<string>('');
+
+  useEffect(() => {
+    if (userId) {
+      loadUserSessions();
+      fetchAIConfig();
+    } else {
+      setSessions([]);
+      setCurrentSession(null);
+    }
+  }, [userId]);
+
+  const fetchAIConfig = async () => {
+    try {
+      const config = await getAIConfig();
+      setSystemPrompt(config.systemPrompt);
+    } catch (error) {
+      console.error('Failed to fetch AI config:', error);
+    }
+  };
+
+  const loadUserSessions = async () => {
+    if (!userId) return;
     
-    const sessionData = {
-      ...session,
-      userId,
-      createdAt: Timestamp.fromDate(session.createdAt),
-      updatedAt: serverTimestamp(),
-      messages: session.messages.map(msg => ({
-        ...msg,
-        timestamp: Timestamp.fromDate(msg.timestamp)
-      }))
+    try {
+      const userSessions = await getUserChatSessions(userId);
+      setSessions(userSessions);
+      if (userSessions.length > 0) {
+        setCurrentSession(userSessions[0]);
+      } else {
+        createNewSession();
+      }
+    } catch (error) {
+      console.error('Error loading sessions:', error);
+    }
+  };
+
+  const createNewSession = () => {
+    const newSession: ChatSession = {
+      id: 'session-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+      title: 'New Chat',
+      messages: [],
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    
+    setCurrentSession(newSession);
+    return newSession;
+  };
+
+  const sendMessage = async (content: string) => {
+    if (!currentSession || !userId || !systemPrompt) return;
+
+    // Check for admin override first
+    if (content.startsWith(ADMIN_TAG) && userId === ADMIN_UID) {
+      console.log("Admin override detected. Updating AI config.");
+      const newPrompt = content.substring(ADMIN_TAG.length).trim();
+      if (newPrompt) {
+        try {
+          // Update the system prompt in Firestore
+          await updateAIConfig(newPrompt);
+          // Update the local state to see the change immediately
+          setSystemPrompt(newPrompt);
+        } catch (error) {
+          console.error("Failed to update system prompt:", error);
+          alert("Failed to update AI personality. Check your console for details.");
+        }
+      }
+      return; // Stop here, don't generate an AI response
+    }
+    
+    const userMessage: Message = {
+      id: 'msg-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+      content,
+      sender: 'user',
+      timestamp: new Date()
     };
 
-    await setDoc(sessionRef, sessionData);
-  } catch (error) {
-    console.error('Error saving chat session:', error);
-    throw error;
-  }
-};
+    const updatedSession = {
+      ...currentSession,
+      messages: [...currentSession.messages, userMessage],
+      title: currentSession.messages.length === 0 ? content.slice(0, 30) + (content.length > 30 ? '...' : '') : currentSession.title,
+      updatedAt: new Date()
+    };
 
-// Get user's chat sessions from Firestore
-export const getUserChatSessions = async (userId: string): Promise<ChatSession[]> => {
-  try {
-    const sessionsQuery = query(
-      collection(db, 'chatSessions'),
-      where('userId', '==', userId),
-      orderBy('updatedAt', 'desc')
-    );
+    setCurrentSession(updatedSession);
 
-    const querySnapshot = await getDocs(sessionsQuery);
-    
-    return querySnapshot.docs.map(doc => {
-      const data = doc.data();
-      return {
-        ...data,
-        id: doc.id,
-        createdAt: data.createdAt.toDate(),
-        updatedAt: data.updatedAt.toDate(),
-        messages: data.messages.map((msg: any) => ({
-          ...msg,
-          timestamp: msg.timestamp.toDate()
-        }))
-      } as ChatSession;
-    });
-  } catch (error) {
-    console.error('Error loading chat sessions:', error);
-    return [];
-  }
-};
+    try {
+      // Generate AI response
+      setIsTyping(true);
+      
+      const conversationHistory = updatedSession.messages.map(msg => ({
+        role: msg.sender === 'user' ? 'user' as const : 'assistant' as const,
+        content: msg.content
+      }));
 
-// Fetch the current AI configuration from Firestore
-export const getAIConfig = async (): Promise<{ systemPrompt: string }> => {
-  try {
-    const configDocRef = doc(db, 'aiConfig', 'default');
-    const configDoc = await getDoc(configDocRef);
+      const aiResponse = await generateAIResponse(conversationHistory, systemPrompt);
 
-    if (configDoc.exists()) {
-      return configDoc.data() as { systemPrompt: string };
-    } else {
-      console.warn("AI config document not found, using default prompt.");
-      return { systemPrompt: "You are Venky's AI, a helpful and friendly assistant. Provide thoughtful, engaging responses while maintaining a conversational tone." };
+      const aiMessage: Message = {
+        id: 'msg-' + Date.now() + '-ai-' + Math.random().toString(36).substr(2, 9),
+        content: aiResponse,
+        sender: 'ai',
+        timestamp: new Date()
+      };
+
+      const finalSession = {
+        ...updatedSession,
+        messages: [...updatedSession.messages, aiMessage],
+        updatedAt: new Date()
+      };
+
+      setCurrentSession(finalSession);
+
+      // Save to Firestore
+      await saveChatSession(userId, finalSession);
+
+      // Update local sessions
+      const existingSessionIndex = sessions.findIndex(s => s.id === finalSession.id);
+      const updatedSessions = existingSessionIndex >= 0
+        ? sessions.map(session => session.id === finalSession.id ? finalSession : session)
+        : [finalSession, ...sessions];
+      
+      setSessions(updatedSessions);
+
+    } catch (error) {
+      console.error('Error sending message:', error);
+      
+      // Add error message
+      const errorMessage: Message = {
+        id: 'msg-' + Date.now() + '-error-' + Math.random().toString(36).substr(2, 9),
+        content: 'Sorry, I encountered an error. Please check your API configuration and try again.',
+        sender: 'ai',
+        timestamp: new Date()
+      };
+
+      const errorSession = {
+        ...updatedSession,
+        messages: [...updatedSession.messages, errorMessage],
+        updatedAt: new Date()
+      };
+
+      setCurrentSession(errorSession);
+    } finally {
+      setIsTyping(false);
     }
-  } catch (error) {
-    console.error('Error fetching AI config:', error);
-    return { systemPrompt: "You are Venky's AI, a helpful and friendly assistant. Provide thoughtful, engaging responses while maintaining a conversational tone." };
-  }
-};
+  };
 
-// Update the AI config document
-export const updateAIConfig = async (systemPrompt: string): Promise<void> => {
-  try {
-    const configDocRef = doc(db, 'aiConfig', 'default');
-    await updateDoc(configDocRef, {
-      systemPrompt: systemPrompt
-    });
-    console.log("AI system prompt updated successfully.");
-  } catch (error) {
-    console.error('Error updating AI config:', error);
-    throw new Error('Failed to update AI system prompt.');
-  }
+  const selectSession = (session: ChatSession) => {
+    setCurrentSession(session);
+  };
+
+  return {
+    sessions,
+    currentSession,
+    isTyping,
+    createNewSession,
+    sendMessage,
+    setCurrentSession: selectSession,
+    loadUserSessions
+  };
 };
