@@ -1,0 +1,10 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config.json",
+  "main": "cloudflare-worker/index.ts",
+  "compatibility_date": "2025-09-01",
+  "env": {
+    "OPENAI_API_KEY": {
+      "binding": "OPENAI_API_KEY"
+    }
+  }
+}
