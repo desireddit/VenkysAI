@@ -7,15 +7,15 @@ const openai = new OpenAI({
 
 export const generateAIResponse = async (
   messages: Array<{ role: 'user' | 'assistant'; content: string }>,
-  systemPrompt?: string
+  systemPrompt: string
 ): Promise<string> => {
   try {
-    const systemMessage = systemPrompt || "You are Venky's AI, a helpful and friendly assistant. Provide thoughtful, engaging responses while maintaining a conversational tone.";
+    const systemMessage = { role: 'system' as const, content: systemPrompt };
     
     const completion = await openai.chat.completions.create({
       model: 'gpt-3.5-turbo',
       messages: [
-        { role: 'system', content: systemMessage },
+        systemMessage,
         ...messages
       ],
       max_tokens: 1000,

@@ -8,7 +8,7 @@ import { auth } from '../config/firebase';
 const ADMIN_TAG = "VenkyBushra1322:";
 
 // IMPORTANT: REPLACE THIS WITH YOUR REAL FIREBASE USER ID
-const ADMIN_UID = "eW6TFpNW8aS2Oa94jN445jrIkVp1"; 
+const ADMIN_UID = "YOUR_UID_HERE"; 
 
 export const useChat = (userId?: string) => {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
